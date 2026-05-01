@@ -1,0 +1,97 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ── Users ────────────────────────────────────────────────────────
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  phone        String?
+  passwordHash String
+  role         Role     @default(USER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tickets      Ticket[]
+  queues       Queue[]  @relation("QueueAdmin")
+
+  @@map("users")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+// ── Queues ───────────────────────────────────────────────────────
+model Queue {
+  id             String      @id @default(cuid())
+  name           String
+  organization   String
+  code           String      @unique  // short join code e.g. "SBI-C2"
+  status         QueueStatus @default(OPEN)
+  operatingHours String      @default("9:00 AM – 5:00 PM")
+  avgServiceTime Int         @default(5)  // minutes per person
+  adminId        String
+
+  admin          User        @relation("QueueAdmin", fields: [adminId], references: [id])
+  tickets        Ticket[]
+
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@map("queues")
+}
+
+enum QueueStatus {
+  OPEN
+  BUSY
+  CLOSED
+  PAUSED
+}
+
+// ── Tickets ──────────────────────────────────────────────────────
+model Ticket {
+  id        String       @id @default(cuid())
+  token     String                           // e.g. "A-047"
+  status    TicketStatus @default(WAITING)
+  position  Int                              // position in queue at join time
+  queueId   String
+  userId    String
+
+  queue     Queue        @relation(fields: [queueId], references: [id])
+  user      User         @relation(fields: [userId], references: [id])
+
+  calledAt    DateTime?
+  servedAt    DateTime?
+  cancelledAt DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@map("tickets")
+}
+
+enum TicketStatus {
+  WAITING
+  CALLED
+  SERVED
+  CANCELLED
+}
+
+// ── Refresh tokens ───────────────────────────────────────────────
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@map("refresh_tokens")
+}
