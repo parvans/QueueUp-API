@@ -1,6 +1,6 @@
 // src/services/auth.service.ts
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
+import jwt, { SignOptions } from 'jsonwebtoken';
 import { prisma } from '../config/prisma';
 
 export async function registerUser(name: string, email: string, password: string, phone?: string) {
@@ -58,16 +58,26 @@ export async function refreshAccessToken(token: string) {
 // ── Helpers ───────────────────────────────────────────────────────
 
 function generateTokens(id: string, email: string, role: string) {
+  const accessOptions:SignOptions = {
+    expiresIn: (process.env.JWT_EXPIRES_IN || '15m') as SignOptions['expiresIn'],
+  };
+
   const accessToken = jwt.sign(
     { id, email, role },
     process.env.JWT_SECRET!,
-    { expiresIn: process.env.JWT_EXPIRES_IN || '15m' }
+    accessOptions
   );
+
+  const refreshOptions:SignOptions = {
+    expiresIn: (process.env.JWT_REFRESH_EXPIRES_IN || '7d') as SignOptions['expiresIn'],
+  };
+  
   const refreshToken = jwt.sign(
     { id, email, role },
     process.env.JWT_REFRESH_SECRET!,
-    { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d' }
+    refreshOptions
   );
+  
   return { accessToken, refreshToken };
 }
 
