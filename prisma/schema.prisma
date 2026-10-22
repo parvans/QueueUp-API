@@ -1,0 +1,269 @@
+// ============================================================================
+// QueueUp — Prisma Schema
+// Source of truth: docs/PRD.md + Phase 0 approved decisions (D-02, D-03, D-11)
+// Prisma version: 6.x (stable — not the 8.0 RC)
+// ============================================================================
+
+generator client {
+  // "prisma-client-js" is the stable generator in Prisma 6.x.
+  // It outputs to node_modules/@prisma/client, which is the standard import path.
+  // The newer "prisma-client" (EA) generator introduced in 6.x is NOT used here
+  // because it is still Early Access and changes the import path.
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  // Pooled Neon PgBouncer connection — used for all application queries.
+  url       = env("DATABASE_URL")
+  // Direct connection — used ONLY for `prisma migrate deploy` (bypasses PgBouncer
+  // because PgBouncer in transaction mode does not support prepared statements
+  // required during migrations).
+  directUrl = env("DIRECT_URL")
+}
+
+// ── Enums ────────────────────────────────────────────────────────────────────
+
+/// User roles — controls API access and authorization guards.
+enum Role {
+  PATIENT
+  STAFF
+  ADMIN
+}
+
+/// Token lifecycle states.
+/// WAITING    — patient is in the queue awaiting their turn.
+/// SERVING    — patient is currently in consultation.
+/// HOLD_SCAN  — patient has been sent for diagnostics; slot is freed.
+/// SKIPPED    — patient did not respond; can be recalled by staff.
+/// COMPLETED  — consultation finished normally.
+/// CANCELLED  — patient or system cancelled the booking.
+enum TokenStatus {
+  WAITING
+  SERVING
+  HOLD_SCAN
+  SKIPPED
+  COMPLETED
+  CANCELLED
+}
+
+/// Queue operational states.
+enum QueueStatus {
+  ACTIVE
+  PAUSED
+  CLOSED
+}
+
+// ── Models ───────────────────────────────────────────────────────────────────
+
+/// Core user account.
+/// Patients authenticate via phone OTP. Staff authenticate via email + password.
+/// Phone is the unique patient identifier; email is used only for staff.
+model User {
+  id           String       @id @default(uuid())
+  phone        String       @unique
+  name         String
+  role         Role         @default(PATIENT)
+  /// Firebase Cloud Messaging token for push notifications (milestone alerts).
+  fcmToken     String?
+  /// Staff: bcrypt-hashed password. Never returned in API responses.
+  passwordHash String?
+  /// Staff: email address for staff login flow.
+  email        String?      @unique
+
+  tokens       Token[]
+  dependents   Dependent[]
+  /// Clinic memberships — only populated for STAFF and ADMIN users (D-02).
+  clinicStaff  ClinicStaff[]
+
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([email])
+}
+
+/// Healthcare clinic entity.
+model Clinic {
+  id        String        @id @default(uuid())
+  name      String
+  address   String?
+  phone     String?
+
+  doctors   Doctor[]
+  /// Staff members associated with this clinic (D-02).
+  staff     ClinicStaff[]
+
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+}
+
+/// Staff-to-clinic membership (D-02 — many-to-many, approved).
+/// A staff user may belong to multiple clinics. Authorization guards check this
+/// table to ensure a staff member can only operate queues in their own clinics.
+model ClinicStaff {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clinicId  String
+  clinic    Clinic   @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, clinicId])
+  @@index([clinicId])
+  @@index([userId])
+}
+
+/// Patient's family member / dependent for booking on their behalf (D-03).
+/// A patient (user) can register multiple dependents.
+/// Token.dependentId references this model when booking for someone else.
+model Dependent {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  /// Optional phone stored for contact; never exposed publicly.
+  phone     String?
+
+  tokens    Token[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+/// Doctor profile.  Belongs to a clinic.
+/// avgServiceTimeSeconds is updated by the rolling average after each callNext.
+model Doctor {
+  id                    String       @id @default(uuid())
+  clinicId              String
+  clinic                Clinic       @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  name                  String
+  roomNumber            String
+  /// Rolling 5-consultation average (PRD §2.4).
+  /// Updated atomically after callNext; baseline 600 s until ≥3 valid sessions.
+  avgServiceTimeSeconds Int          @default(600)
+
+  dailyQueues           DailyQueue[]
+  serviceLogs           ServiceLog[]
+
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+}
+
+/// One queue per doctor per calendar date (UTC).
+/// Created idempotently on the first booking or by staff (D-11, approved).
+/// @@unique([doctorId, queueDate]) enforces the one-per-day rule at DB level.
+model DailyQueue {
+  id             String      @id @default(uuid())
+  doctorId       String
+  doctor         Doctor      @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  /// Calendar date stored as DATE (no time component, UTC).
+  queueDate      DateTime    @db.Date
+  status         QueueStatus @default(ACTIVE)
+
+  /// Cumulative delay in minutes broadcast to all patients in this queue.
+  delayMinutes   Int         @default(0)
+  delayReason    String?
+  /// Timestamp of the last delay broadcast — used for UI freshness ("set 5 min ago").
+  delaySetAt     DateTime?
+
+  /// Monotonically incrementing counter — never decremented.
+  /// Used to assign the next sequential token number atomically via SELECT FOR UPDATE.
+  lastTokenNumber Int        @default(0)
+
+  /// Single source of truth for the currently serving token (PRD §3.2).
+  /// @@unique prevents two tokens being served simultaneously.
+  currentTokenId String?     @unique
+  currentToken   Token?      @relation("CurrentServingToken", fields: [currentTokenId], references: [id])
+
+  tokens         Token[]     @relation("QueueTokens")
+
+  /// Session boundary fields (A-02, approved).
+  /// openedAt: set when queue first transitions to ACTIVE or is re-opened.
+  /// closedAt: set when staff marks queue CLOSED.
+  /// Rolling average uses ServiceLogs created between openedAt and closedAt.
+  openedAt       DateTime?
+  closedAt       DateTime?
+
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@unique([doctorId, queueDate])
+}
+
+/// A single patient booking / queue entry.
+model Token {
+  id             String      @id @default(uuid())
+  queueId        String
+  queue          DailyQueue  @relation("QueueTokens", fields: [queueId], references: [id], onDelete: Cascade)
+
+  /// Nullable — anonymous bookings are allowed (no login required).
+  /// When set, guards verify patientId === JWT sub for patient-only actions.
+  patientId      String?
+  patient        User?       @relation(fields: [patientId], references: [id], onDelete: SetNull)
+
+  /// Optional link to a Dependent record (D-03, approved).
+  /// Set when a patient books for a registered dependent.
+  dependentId    String?
+  dependent      Dependent?  @relation(fields: [dependentId], references: [id], onDelete: SetNull)
+
+  /// Display name shown on public queue screens (first name only after masking).
+  patientName    String
+  /// Stored internally; masked (+91 98****1234) on public-facing responses (PRD NFR-04).
+  phone          String
+
+  /// Sequential token number within this queue (1, 2, 3 …).
+  /// Assigned atomically via SELECT FOR UPDATE on DailyQueue.lastTokenNumber.
+  tokenNumber    Int
+  status         TokenStatus @default(WAITING)
+
+  /// Fractional position for O(1) re-ordering (PRD §2.1).
+  /// New bookings: max(queuePosition) + 100.0
+  /// Insertions:   (posA + posB) / 2.0
+  /// Rebalance triggered when |posB - posA| < 0.001 (D-13).
+  queuePosition  Float
+
+  /// Enforced once-per-token (PRD §2.3). Guards reject if true before performing step-aside.
+  stepAsideUsed  Boolean     @default(false)
+
+  /// Timestamps for service duration calculation and audit trail.
+  servedAt       DateTime?   /// Set when token becomes SERVING.
+  completedAt    DateTime?   /// Set when token becomes COMPLETED.
+  cancelledAt    DateTime?   /// Set when token becomes CANCELLED (audit — not in PRD, added §5.2C).
+  holdScanAt     DateTime?   /// Set when token becomes HOLD_SCAN (audit — §5.2D).
+  recalledAt     DateTime?   /// Set when a SKIPPED token is recalled (audit — §5.2G).
+
+  /// Back-reference to the queue's currentToken relation.
+  servingInQueue DailyQueue? @relation("CurrentServingToken")
+  serviceLogs    ServiceLog[]
+
+  /// Milestone tracking — prevents duplicate Socket.IO milestoneAlert events (D-06 design).
+  /// Stores the highest milestone already emitted: null | 5 | 2 | 1
+  lastMilestoneEmitted Int?
+
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@unique([queueId, tokenNumber])            // no duplicate token numbers per queue
+  @@index([queueId, queuePosition])           // fractional position range queries
+  @@index([queueId, status])                  // filter WAITING / HOLD_SCAN / SKIPPED
+  @@index([patientId])                        // patient booking history lookup
+}
+
+/// Immutable audit record written after each successful consultation.
+/// Used by the rolling average calculator (PRD §2.4) to determine pace.
+model ServiceLog {
+  id              String   @id @default(uuid())
+  tokenId         String
+  token           Token    @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  doctorId        String
+  doctor          Doctor   @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  /// durationSeconds = completedAt - servedAt in seconds.
+  /// Entries < 30 s are written but excluded from the rolling average (PRD §2.4).
+  durationSeconds Int
+
+  createdAt       DateTime @default(now())
+
+  @@index([doctorId, createdAt])   // rolling average query: last 5 valid logs per doctor
+}

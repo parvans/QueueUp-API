@@ -1,0 +1,36 @@
+# ── Environment ──────────────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Node ─────────────────────────────────────────────────────────────────────
+node_modules/
+
+# ── Build output ─────────────────────────────────────────────────────────────
+dist/
+build/
+
+# ── Prisma generated client ───────────────────────────────────────────────────
+# The generated client is always reproducible via `prisma generate`.
+# Keep the schema and migrations but not the generated JS output.
+node_modules/.prisma/
+
+# ── Coverage & logs ───────────────────────────────────────────────────────────
+coverage/
+*.log
+npm-debug.log*
+
+# ── OS files ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Editor ───────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── TypeScript incremental cache ──────────────────────────────────────────────
+*.tsbuildinfo
+
+/generated/prisma
