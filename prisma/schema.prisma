@@ -1,0 +1,112 @@
+
+generator client {
+  provider = "prisma-client-js"
+  //output   = "../src/generated/prisma" // Use default folder (node_modules/.prisma)
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  PATIENT
+  STAFF
+  ADMIN
+}
+
+enum TokenStatus {
+  WAITING
+  SERVING
+  HOLD_SCAN
+  SKIPPED
+  COMPLETED
+  CANCELLED
+}
+
+enum QueueStatus {
+  ACTIVE
+  PAUSED
+  CLOSED
+}
+
+model User {
+  id        String   @id @default(uuid())
+  phone     String   @unique
+  name      String
+  role      Role     @default(PATIENT)
+  fcmToken  String?
+  tokens    Token[]
+  createdAt DateTime @default(now())
+}
+
+model Clinic {
+  id        String   @id @default(uuid())
+  name      String
+  doctors   Doctor[]
+  createdAt DateTime @default(now())
+}
+
+model Doctor {
+  id                    String       @id @default(uuid())
+  clinicId              String
+  clinic                Clinic       @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  name                  String
+  roomNumber            String
+  avgServiceTimeSeconds Int          @default(600)
+  dailyQueues           DailyQueue[]
+  serviceLogs           ServiceLog[]
+  createdAt             DateTime     @default(now())
+}
+
+model DailyQueue {
+  id              String      @id @default(uuid())
+  doctorId        String
+  doctor          Doctor      @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  queueDate       DateTime    @db.Date
+  status          QueueStatus @default(ACTIVE)
+  delayMinutes    Int         @default(0)
+  delayReason     String?
+  lastTokenNumber Int         @default(0)
+  currentTokenId  String?     @unique
+  currentToken    Token?      @relation("CurrentServingToken", fields: [currentTokenId], references: [id])
+  tokens          Token[]     @relation("QueueTokens")
+  createdAt       DateTime    @default(now())
+
+  @@unique([doctorId, queueDate])
+}
+
+
+model Token {
+  id             String       @id @default(uuid())
+  queueId        String
+  queue          DailyQueue   @relation("QueueTokens", fields: [queueId], references: [id], onDelete: Cascade)
+  patientId      String?
+  patient        User?        @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  patientName    String
+  phone          String
+  tokenNumber    Int
+  status         TokenStatus  @default(WAITING)
+  queuePosition  Float
+  stepAsideUsed  Boolean      @default(false)
+  servedAt       DateTime?
+  completedAt    DateTime?
+  servingInQueue DailyQueue?  @relation("CurrentServingToken")
+  serviceLogs    ServiceLog[]
+  createdAt      DateTime     @default(now())
+
+  @@index([queueId, queuePosition])
+  @@index([queueId, status])
+}
+
+model ServiceLog {
+  id              String   @id @default(uuid())
+  tokenId         String
+  token           Token    @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  doctorId        String
+  doctor          Doctor   @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  durationSeconds Int
+  createdAt       DateTime @default(now())
+}
+
+
+
