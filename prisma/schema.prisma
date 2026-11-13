@@ -30,13 +30,14 @@ enum QueueStatus {
 }
 
 model User {
-  id        String   @id @default(uuid())
-  phone     String   @unique
-  name      String
-  role      Role     @default(PATIENT)
-  fcmToken  String?
-  tokens    Token[]
-  createdAt DateTime @default(now())
+  id           String   @id @default(uuid())
+  phone        String   @unique
+  name         String
+  role         Role     @default(PATIENT)
+  fcmToken     String?
+  passwordHash String?
+  tokens       Token[]
+  createdAt    DateTime @default(now())
 }
 
 model Clinic {

@@ -1,13 +1,19 @@
-import { NestFactory } from '@nestjs/core';
+import { NestFactory, Reflector } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, Logger } from '@nestjs/common';
+import { AllExceptionsFilter } from './core/filters/all-exceptions.filter';
+import { TransformInterceptor } from './core/interceptors/transform.interceptor';
+import { LoggingInterceptor } from './core/interceptors/logging.interceptor';
 
-async function bootstrap() {
+async function bootstrap(): Promise<void> {
+  const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule);
   const configService = app.get(ConfigService);
+  const reflector = app.get(Reflector);
 
+  // Global validation pipe
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -16,10 +22,22 @@ async function bootstrap() {
     }),
   );
 
-  app.setGlobalPrefix('api');
+  // Global filters and interceptors
+  app.useGlobalFilters(new AllExceptionsFilter());
+  app.useGlobalInterceptors(
+    new LoggingInterceptor(),
+    new TransformInterceptor(reflector),
+  );
+
+  // Global prefix for API version 1
+  app.setGlobalPrefix('api/v1');
+
+  // Swagger OpenAPI documentation
   const config = new DocumentBuilder()
-    .setTitle('QueueUP API')
-    .setDescription('Complete API documentation for the QueueUP app')
+    .setTitle('QueueUp API')
+    .setDescription(
+      'REST & Real-time API documentation for the QueueUp virtual queue management platform',
+    )
     .setVersion('1.0')
     .addBearerAuth()
     .build();
@@ -27,12 +45,28 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api/docs', app, document);
 
-  const port = configService.get<number>('PORT') || 3000;
+  // CORS Configuration
+  const corsOrigin = configService.get<string>('CORS_ORIGIN');
+  if (corsOrigin) {
+    app.enableCors({
+      origin: corsOrigin.split(','),
+      credentials: true,
+    });
+  } else {
+    app.enableCors();
+  }
 
+  const port = configService.get<number>('PORT') || 3000;
   await app.listen(port);
-  console.log(`Application is running on: http://localhost:${port}/api`);
-  console.log(
-    `Swagger documentation is available at: http://localhost:${port}/api/docs`,
+
+  logger.log(`QueueUp API running on: http://localhost:${port}/api/v1`);
+  logger.log(
+    `Swagger documentation available at: http://localhost:${port}/api/docs`,
   );
 }
-bootstrap();
+
+bootstrap().catch((err: unknown) => {
+  const logger = new Logger('BootstrapError');
+  logger.error('Failed to start QueueUp application', err);
+  process.exit(1);
+});
