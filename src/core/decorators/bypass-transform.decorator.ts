@@ -8,4 +8,3 @@ export const BYPASS_TRANSFORM_KEY = 'bypassTransform';
  */
 export const BypassTransform = (): CustomDecorator<string> =>
   SetMetadata(BYPASS_TRANSFORM_KEY, true);
-

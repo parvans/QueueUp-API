@@ -158,4 +158,3 @@ describe('TransformInterceptor', () => {
     expect(result).toBe(streamableFile);
   });
 });
-

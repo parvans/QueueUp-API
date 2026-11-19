@@ -56,6 +56,9 @@ async function bootstrap(): Promise<void> {
     app.enableCors();
   }
 
+  // Enable graceful shutdown hooks (triggers OnModuleDestroy on providers)
+  app.enableShutdownHooks();
+
   const port = configService.get<number>('PORT') || 3000;
   await app.listen(port);
 

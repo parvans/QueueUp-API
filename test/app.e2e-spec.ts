@@ -10,17 +10,26 @@ import { Reflector } from '@nestjs/core';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
+import { PrismaService } from '../src/prisma/prisma.service';
 import { AllExceptionsFilter } from '../src/core/filters/all-exceptions.filter';
 import { TransformInterceptor } from '../src/core/interceptors/transform.interceptor';
 import { LoggingInterceptor } from '../src/core/interceptors/logging.interceptor';
 
 describe('HealthController (e2e)', () => {
   let app: INestApplication<App>;
+  const mockPrisma = {
+    ping: jest.fn().mockResolvedValue({ status: 'up', latencyMs: 2 }),
+    onModuleInit: jest.fn().mockResolvedValue(undefined),
+    onModuleDestroy: jest.fn().mockResolvedValue(undefined),
+  };
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(PrismaService)
+      .useValue(mockPrisma)
+      .compile();
 
     app = moduleFixture.createNestApplication();
     const reflector = app.get(Reflector);
@@ -46,7 +55,7 @@ describe('HealthController (e2e)', () => {
     await app.close();
   });
 
-  it('/api/v1/health (GET) - returns health status in standard envelope', async () => {
+  it('/api/v1/health (GET) - returns health status with database status in standard envelope', async () => {
     const response = await request(app.getHttpServer())
       .get('/api/v1/health')
       .expect(200);
@@ -59,6 +68,10 @@ describe('HealthController (e2e)', () => {
         uptime: number;
         version: string;
         timestamp: string;
+        database: {
+          status: string;
+          latencyMs: number;
+        };
       };
       timestamp: string;
     };
@@ -69,6 +82,8 @@ describe('HealthController (e2e)', () => {
     expect(body.data.version).toBe('1.0.0');
     expect(typeof body.data.uptime).toBe('number');
     expect(typeof body.data.timestamp).toBe('string');
+    expect(body.data.database.status).toBe('up');
+    expect(typeof body.data.database.latencyMs).toBe('number');
     expect(typeof body.timestamp).toBe('string');
   });
 
