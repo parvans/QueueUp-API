@@ -63,7 +63,7 @@ jobs:
 
       # 8. Run unit tests
       - name: Run unit tests
-        run: pnpm run test -- --runInBand
+        run: pnpm run test --runInBand
 
       # 9. Build application
       - name: Build application
