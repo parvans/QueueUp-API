@@ -4,6 +4,7 @@
   "description": "",
   "author": "",
   "private": true,
+  "packageManager": "pnpm@12.16.1",
   "license": "UNLICENSED",
   "scripts": {
     "build": "NODE_OPTIONS=\"--use-bundled-ca\" nest build",
