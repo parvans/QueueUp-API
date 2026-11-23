@@ -1,0 +1,70 @@
+
+name: QueueUp Backend CI
+
+# When should this workflow run?
+on:
+  push:
+    branches:
+      - main
+      #- dev
+
+  pull_request:
+    branches:
+      - main
+      #- dev
+
+# Cancel outdated runs for the same branch/PR.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimum permissions required.
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    name: Test and Build
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Download repository code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Setup pnpm
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      # 3. Setup Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      # 4. Install dependencies
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 5. Generate Prisma Client
+      - name: Generate Prisma Client
+        run: pnpm exec prisma generate
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/queueup_ci
+
+      # 6. Run ESLint
+      - name: Run ESLint
+        run: pnpm run lint
+
+      # 7. Check formatting
+      - name: Check formatting
+        run: pnpm run format:check
+
+      # 8. Run unit tests
+      - name: Run unit tests
+        run: pnpm run test -- --runInBand
+
+      # 9. Build application
+      - name: Build application
+        run: pnpm run build
