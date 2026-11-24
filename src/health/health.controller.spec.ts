@@ -53,7 +53,7 @@ describe('HealthController', () => {
     expect(skipThrottle).toBe(true);
   });
 
-  describe('check', () => {
+  describe('check (combined health)', () => {
     it('should return status "ok" and database ping metrics when database is up (HTTP 200)', async () => {
       mockPrismaService.ping.mockResolvedValueOnce({
         status: 'up',
@@ -95,6 +95,51 @@ describe('HealthController', () => {
         latencyMs: 12,
         error: 'Database connectivity check failed',
       });
+    });
+  });
+
+  describe('liveness', () => {
+    it('should return status "ok" with uptime and not query database', () => {
+      const result = controller.liveness();
+
+      expect(result.status).toBe('ok');
+      expect(typeof result.uptime).toBe('number');
+      expect(result.uptime).toBeGreaterThanOrEqual(0);
+      expect(new Date(result.timestamp).toISOString()).toBe(result.timestamp);
+      expect(mockPrismaService.ping).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('readiness', () => {
+    it('should return status "ok" with HTTP 200 when database is ready', async () => {
+      mockPrismaService.ping.mockResolvedValueOnce({
+        status: 'up',
+        latencyMs: 4,
+      });
+
+      const result = await controller.readiness(mockResponse as Response);
+
+      expect(result.status).toBe('ok');
+      expect(mockResponse.status).not.toHaveBeenCalledWith(
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+      expect(result.database.status).toBe('up');
+    });
+
+    it('should return status "degraded" and HTTP 503 when database is not ready', async () => {
+      mockPrismaService.ping.mockResolvedValueOnce({
+        status: 'down',
+        latencyMs: 20,
+        error: 'Database connectivity check failed',
+      });
+
+      const result = await controller.readiness(mockResponse as Response);
+
+      expect(result.status).toBe('degraded');
+      expect(mockResponse.status).toHaveBeenCalledWith(
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+      expect(result.database.status).toBe('down');
     });
   });
 });

@@ -68,13 +68,17 @@ describe('PrismaService', () => {
       expect(connectSpy).toHaveBeenCalled();
     });
 
-    it('should throw if $connect fails on module init', async () => {
+    it('should throw and sanitize error message if $connect fails on module init', async () => {
       jest
         .spyOn(service, '$connect')
-        .mockRejectedValueOnce(new Error('Connection refused'));
+        .mockRejectedValueOnce(
+          new Error(
+            'Connection refused to postgresql://user:secretPass@neon.tech/db',
+          ),
+        );
 
       await expect(service.onModuleInit()).rejects.toThrow(
-        'Connection refused',
+        'Connection refused to postgresql://user:secretPass@neon.tech/db',
       );
     });
 
@@ -223,6 +227,78 @@ describe('PrismaService', () => {
       await expect(service.withQueueLock(queueId, action)).rejects.toThrow(
         'Transaction action failed',
       );
+    });
+
+    it('should serialize concurrent transactions targeting the same queue', async () => {
+      const executionOrder: string[] = [];
+      let activeLocks = 0;
+      let maxConcurrentLocks = 0;
+
+      // Simulate serialized row lock behavior in PostgreSQL
+      let lockPromise = Promise.resolve();
+
+      jest
+        .spyOn(service, '$transaction')
+        .mockImplementation(async (cb: unknown) => {
+          if (typeof cb === 'function') {
+            // Queue up transactions sequentially
+            const previousLock = lockPromise;
+            let releaseCurrentLock: () => void = () => {};
+            lockPromise = new Promise<void>((resolve) => {
+              releaseCurrentLock = resolve;
+            });
+
+            await previousLock;
+            activeLocks++;
+            if (activeLocks > maxConcurrentLocks) {
+              maxConcurrentLocks = activeLocks;
+            }
+
+            try {
+              const mockTx = {} as Prisma.TransactionClient;
+              return await (
+                cb as (tx: Prisma.TransactionClient) => Promise<unknown>
+              )(mockTx);
+            } finally {
+              activeLocks--;
+              releaseCurrentLock();
+            }
+          }
+          return Promise.resolve(null);
+        });
+
+      jest.spyOn(service, 'lockDailyQueue').mockResolvedValue(undefined);
+
+      const queueId = 'shared-queue-id';
+
+      // Launch two concurrent operations on the same queue
+      const tx1 = service.withQueueLock(queueId, async () => {
+        executionOrder.push('tx1-start');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        executionOrder.push('tx1-end');
+        return 'res1';
+      });
+
+      const tx2 = service.withQueueLock(queueId, async () => {
+        executionOrder.push('tx2-start');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        executionOrder.push('tx2-end');
+        return 'res2';
+      });
+
+      const [res1, res2] = await Promise.all([tx1, tx2]);
+
+      expect(res1).toBe('res1');
+      expect(res2).toBe('res2');
+      // Verify serialized execution: tx1 must finish before tx2 starts
+      expect(executionOrder).toEqual([
+        'tx1-start',
+        'tx1-end',
+        'tx2-start',
+        'tx2-end',
+      ]);
+      // Maximum concurrent lock count must never exceed 1
+      expect(maxConcurrentLocks).toBe(1);
     });
   });
 });

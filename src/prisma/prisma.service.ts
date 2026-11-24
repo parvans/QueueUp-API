@@ -10,6 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaClient, Prisma } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool, PoolConfig } from 'pg';
+import { sanitizeError } from '../core/utils/sanitize.util';
 
 export interface DatabasePingResult {
   status: 'up' | 'down';
@@ -67,6 +68,7 @@ export class PrismaService
   /**
    * Initializes connection to the database.
    * Connects via Prisma adapter and verifies pool readiness.
+   * Sanitizes error output to prevent leaking credentials in logs.
    */
   async onModuleInit(): Promise<void> {
     try {
@@ -75,10 +77,8 @@ export class PrismaService
         'PrismaService connected successfully via PgBouncer connection pool',
       );
     } catch (err: unknown) {
-      this.logger.error(
-        `Failed to connect to database: ${(err as Error).message}`,
-        (err as Error).stack,
-      );
+      const safeError = sanitizeError(err);
+      this.logger.error(`Failed to connect to database: ${safeError}`);
       throw err;
     }
   }
@@ -95,16 +95,15 @@ export class PrismaService
       }
       this.logger.log('PrismaService disconnected and connection pool drained');
     } catch (err: unknown) {
-      this.logger.error(
-        `Error during PrismaService disconnect: ${(err as Error).message}`,
-      );
+      const safeError = sanitizeError(err);
+      this.logger.error(`Error during PrismaService disconnect: ${safeError}`);
     }
   }
 
   /**
    * Health ping utility measuring database query response time.
    * Executes a lightweight parameterized 'SELECT 1' query.
-   * Sanitizes the public error message to ensure credentials and hostnames are never leaked.
+   * Sanitizes internal error logging and public responses.
    */
   async ping(): Promise<DatabasePingResult> {
     const startTime = Date.now();
@@ -117,8 +116,8 @@ export class PrismaService
       };
     } catch (err: unknown) {
       const latencyMs = Date.now() - startTime;
-      const rawError = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Database health ping failed: ${rawError}`);
+      const safeError = sanitizeError(err);
+      this.logger.error(`Database health ping failed: ${safeError}`);
 
       return {
         status: 'down',
