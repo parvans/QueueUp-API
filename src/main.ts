@@ -30,7 +30,7 @@ async function bootstrap(): Promise<void> {
   );
 
   // Global prefix for API version 1
-  app.setGlobalPrefix('api/v1');
+  app.setGlobalPrefix(configService.get<string>('API_PREFIX') || 'api/v1');
 
   // Swagger OpenAPI documentation
   const config = new DocumentBuilder()

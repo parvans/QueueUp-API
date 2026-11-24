@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+import { NotFoundException } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 import { Prisma } from '@prisma/client';
 import { Pool } from 'pg';
@@ -111,29 +112,33 @@ describe('PrismaService', () => {
       expect(result.error).toBeUndefined();
     });
 
-    it('should return status "down" with error details when queryRaw fails', async () => {
+    it('should return status "down" with sanitized error message when queryRaw fails', async () => {
       jest
         .spyOn(service, '$queryRaw')
-        .mockRejectedValueOnce(new Error('Database timeout'));
+        .mockRejectedValueOnce(
+          new Error('connect ECONNREFUSED 10.0.0.5:5432 - sensitive details'),
+        );
 
       const result = await service.ping();
 
       expect(result.status).toBe('down');
       expect(typeof result.latencyMs).toBe('number');
-      expect(result.error).toBe('Database timeout');
+      // Must not leak sensitive connection IP or message
+      expect(result.error).toBe('Database connectivity check failed');
+      expect(result.error).not.toContain('10.0.0.5');
     });
   });
 
   describe('lockDailyQueue', () => {
-    it('should execute parameterized SELECT FOR UPDATE on the transaction client', async () => {
+    it('should execute parameterized SELECT FOR UPDATE via $queryRaw and succeed if row exists', async () => {
       const mockTx = {
-        $executeRaw: jest.fn().mockResolvedValue(1),
+        $queryRaw: jest.fn().mockResolvedValue([{ id: 'queue-uuid-123' }]),
       } as unknown as Prisma.TransactionClient;
 
       const queueId = 'queue-uuid-123';
       await service.lockDailyQueue(mockTx, queueId);
 
-      const rawMock = mockTx.$executeRaw as jest.Mock;
+      const rawMock = mockTx.$queryRaw as jest.Mock;
       expect(rawMock).toHaveBeenCalled();
       const rawCalls = rawMock.mock.calls as unknown[][];
       const callArg = rawCalls[0][0] as {
@@ -141,18 +146,29 @@ describe('PrismaService', () => {
         values: unknown[];
       };
 
-      // Verify the query contains FOR UPDATE and parameterizes queueId
+      // Verify the query uses SELECT ... FOR UPDATE and parameterizes queueId
       expect(callArg.strings.join('?')).toContain(
         'SELECT id FROM "DailyQueue" WHERE id = ? FOR UPDATE',
       );
       expect(callArg.values).toContain(queueId);
     });
+
+    it('should throw NotFoundException if the queue row does not exist', async () => {
+      const mockTx = {
+        $queryRaw: jest.fn().mockResolvedValue([]),
+      } as unknown as Prisma.TransactionClient;
+
+      const queueId = 'non-existent-queue';
+      await expect(service.lockDailyQueue(mockTx, queueId)).rejects.toThrow(
+        NotFoundException,
+      );
+    });
   });
 
   describe('withQueueLock', () => {
-    it('should wrap callback inside an interactive transaction with lock', async () => {
+    it('should wrap callback inside an interactive transaction with lock and return result', async () => {
       const mockTx = {
-        $executeRaw: jest.fn().mockResolvedValue(1),
+        $queryRaw: jest.fn().mockResolvedValue([{ id: 'queue-abc' }]),
       } as unknown as Prisma.TransactionClient;
 
       const transactionSpy = jest
@@ -179,6 +195,34 @@ describe('PrismaService', () => {
       expect(lockSpy).toHaveBeenCalledWith(mockTx, queueId);
       expect(action).toHaveBeenCalledWith(mockTx);
       expect(result).toEqual({ processed: true });
+    });
+
+    it('should propagate errors and allow transaction rollback if callback fails', async () => {
+      const mockTx = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: 'queue-abc' }]),
+      } as unknown as Prisma.TransactionClient;
+
+      jest
+        .spyOn(service, '$transaction')
+        .mockImplementation(async (cb: unknown) => {
+          if (typeof cb === 'function') {
+            return (cb as (tx: Prisma.TransactionClient) => Promise<unknown>)(
+              mockTx,
+            );
+          }
+          return Promise.resolve(null);
+        });
+
+      jest.spyOn(service, 'lockDailyQueue').mockResolvedValue(undefined);
+
+      const queueId = 'queue-abc';
+      const action = jest
+        .fn()
+        .mockRejectedValue(new Error('Transaction action failed'));
+
+      await expect(service.withQueueLock(queueId, action)).rejects.toThrow(
+        'Transaction action failed',
+      );
     });
   });
 });

@@ -55,7 +55,9 @@ describe('HealthController (e2e)', () => {
     await app.close();
   });
 
-  it('/api/v1/health (GET) - returns health status with database status in standard envelope', async () => {
+  it('/api/v1/health (GET) - returns health status with database status in standard envelope (HTTP 200)', async () => {
+    mockPrisma.ping.mockResolvedValueOnce({ status: 'up', latencyMs: 2 });
+
     const response = await request(app.getHttpServer())
       .get('/api/v1/health')
       .expect(200);
@@ -85,6 +87,36 @@ describe('HealthController (e2e)', () => {
     expect(body.data.database.status).toBe('up');
     expect(typeof body.data.database.latencyMs).toBe('number');
     expect(typeof body.timestamp).toBe('string');
+  });
+
+  it('/api/v1/health (GET) - returns degraded status and HTTP 503 when database is down', async () => {
+    mockPrisma.ping.mockResolvedValueOnce({
+      status: 'down',
+      latencyMs: 15,
+      error: 'Database connectivity check failed',
+    });
+
+    const response = await request(app.getHttpServer())
+      .get('/api/v1/health')
+      .expect(503);
+
+    const body = response.body as {
+      success: boolean;
+      statusCode: number;
+      data: {
+        status: string;
+        database: {
+          status: string;
+          error?: string;
+        };
+      };
+    };
+
+    expect(body.success).toBe(false);
+    expect(body.statusCode).toBe(503);
+    expect(body.data.status).toBe('degraded');
+    expect(body.data.database.status).toBe('down');
+    expect(body.data.database.error).toBe('Database connectivity check failed');
   });
 
   it('/api/v1/non-existent-route (GET) - returns 404 in standard error envelope', async () => {

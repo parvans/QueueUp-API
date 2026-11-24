@@ -12,7 +12,7 @@ import { Request, Response } from 'express';
 import { BYPASS_TRANSFORM_KEY } from '../decorators/bypass-transform.decorator';
 
 export interface StandardApiResponse<T> {
-  success: true;
+  success: boolean;
   statusCode: number;
   data: T;
   timestamp: string;
@@ -70,15 +70,16 @@ export class TransformInterceptor<T> implements NestInterceptor<
           typeof data === 'object' &&
           'success' in data &&
           'data' in data &&
-          (data as Record<string, unknown>).success === true
+          typeof (data as Record<string, unknown>).success === 'boolean'
         ) {
           return data;
         }
 
         const statusCode = res?.statusCode ?? 200;
+        const success = statusCode >= 200 && statusCode < 400;
 
         return {
-          success: true,
+          success,
           statusCode,
           data: data !== undefined ? data : null,
           timestamp: new Date().toISOString(),

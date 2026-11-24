@@ -4,6 +4,7 @@ import {
   OnModuleDestroy,
   Logger,
   Optional,
+  NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient, Prisma } from '@prisma/client';
@@ -103,6 +104,7 @@ export class PrismaService
   /**
    * Health ping utility measuring database query response time.
    * Executes a lightweight parameterized 'SELECT 1' query.
+   * Sanitizes the public error message to ensure credentials and hostnames are never leaked.
    */
   async ping(): Promise<DatabasePingResult> {
     const startTime = Date.now();
@@ -115,27 +117,35 @@ export class PrismaService
       };
     } catch (err: unknown) {
       const latencyMs = Date.now() - startTime;
-      const errorMsg =
-        err instanceof Error ? err.message : 'Database ping query failed';
+      const rawError = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Database health ping failed: ${rawError}`);
+
       return {
         status: 'down',
         latencyMs,
-        error: errorMsg,
+        error: 'Database connectivity check failed',
       };
     }
   }
 
   /**
    * Safely acquires a row-level lock on a DailyQueue record within an interactive transaction.
-   * Uses parameterized Prisma.sql to prevent SQL injection.
+   * Uses $queryRaw with parameterized Prisma.sql to prevent SQL injection and returns the locked row.
+   * Throws NotFoundException if the target DailyQueue record does not exist.
    */
   async lockDailyQueue(
     tx: Prisma.TransactionClient,
     queueId: string,
   ): Promise<void> {
-    await tx.$executeRaw(
+    const rows = await tx.$queryRaw<Array<{ id: string }>>(
       Prisma.sql`SELECT id FROM "DailyQueue" WHERE id = ${queueId} FOR UPDATE`,
     );
+
+    if (!rows || rows.length === 0) {
+      throw new NotFoundException(
+        `DailyQueue with ID "${queueId}" not found for locking`,
+      );
+    }
   }
 
   /**

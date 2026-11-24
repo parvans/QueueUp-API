@@ -1,6 +1,7 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Res, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
+import type { Response } from 'express';
 import { PrismaService, DatabasePingResult } from '../prisma/prisma.service';
 
 export interface HealthCheckResponse {
@@ -21,7 +22,7 @@ export class HealthController {
   @ApiOperation({ summary: 'Check API service and database health' })
   @ApiResponse({
     status: 200,
-    description: 'Service health check response with database status',
+    description: 'Service is healthy and database is connected',
     schema: {
       example: {
         success: true,
@@ -29,20 +30,48 @@ export class HealthController {
         data: {
           status: 'ok',
           uptime: 12.34,
-          timestamp: '2026-11-19T13:56:00.000Z',
+          timestamp: '2026-11-23T20:39:00.000Z',
           version: '1.0.0',
           database: {
             status: 'up',
             latencyMs: 3,
           },
         },
-        timestamp: '2026-11-19T13:56:00.000Z',
+        timestamp: '2026-11-23T20:39:00.000Z',
       },
     },
   })
-  async check(): Promise<HealthCheckResponse> {
+  @ApiResponse({
+    status: 503,
+    description: 'Service or database is degraded/unhealthy',
+    schema: {
+      example: {
+        success: false,
+        statusCode: 503,
+        data: {
+          status: 'degraded',
+          uptime: 12.34,
+          timestamp: '2026-11-23T20:39:00.000Z',
+          version: '1.0.0',
+          database: {
+            status: 'down',
+            latencyMs: 15,
+            error: 'Database connectivity check failed',
+          },
+        },
+        timestamp: '2026-11-23T20:39:00.000Z',
+      },
+    },
+  })
+  async check(
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<HealthCheckResponse> {
     const dbResult = await this.prismaService.ping();
     const isHealthy = dbResult.status === 'up';
+
+    if (!isHealthy) {
+      res.status(HttpStatus.SERVICE_UNAVAILABLE);
+    }
 
     return {
       status: isHealthy ? 'ok' : 'degraded',

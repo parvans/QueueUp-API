@@ -5,6 +5,9 @@ jest.mock('@nestjs/swagger', () => ({
 }));
 
 import { Test, TestingModule } from '@nestjs/testing';
+import { HttpStatus } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { Response } from 'express';
 import { HealthController } from './health.controller';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -13,10 +16,15 @@ describe('HealthController', () => {
   let mockPrismaService: {
     ping: jest.Mock;
   };
+  let mockResponse: Partial<Response>;
 
   beforeEach(async () => {
     mockPrismaService = {
       ping: jest.fn().mockResolvedValue({ status: 'up', latencyMs: 5 }),
+    };
+
+    mockResponse = {
+      status: jest.fn().mockReturnThis(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -36,17 +44,29 @@ describe('HealthController', () => {
     expect(controller).toBeDefined();
   });
 
+  it('should have @SkipThrottle metadata applied to class', () => {
+    const reflector = new Reflector();
+    const skipThrottle = reflector.get<boolean>(
+      'THROTTLER:SKIPdefault',
+      HealthController,
+    );
+    expect(skipThrottle).toBe(true);
+  });
+
   describe('check', () => {
-    it('should return status "ok" and database ping metrics when database is up', async () => {
+    it('should return status "ok" and database ping metrics when database is up (HTTP 200)', async () => {
       mockPrismaService.ping.mockResolvedValueOnce({
         status: 'up',
         latencyMs: 3,
       });
 
-      const result = await controller.check();
+      const result = await controller.check(mockResponse as Response);
 
       expect(result).toBeDefined();
       expect(result.status).toBe('ok');
+      expect(mockResponse.status).not.toHaveBeenCalledWith(
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
       expect(typeof result.uptime).toBe('number');
       expect(result.uptime).toBeGreaterThanOrEqual(0);
       expect(result.version).toBe('1.0.0');
@@ -57,20 +77,23 @@ describe('HealthController', () => {
       });
     });
 
-    it('should return status "degraded" with error details when database is down', async () => {
+    it('should set HTTP 503 and return status "degraded" when database is down', async () => {
       mockPrismaService.ping.mockResolvedValueOnce({
         status: 'down',
         latencyMs: 12,
-        error: 'Database connection failed',
+        error: 'Database connectivity check failed',
       });
 
-      const result = await controller.check();
+      const result = await controller.check(mockResponse as Response);
 
+      expect(mockResponse.status).toHaveBeenCalledWith(
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
       expect(result.status).toBe('degraded');
       expect(result.database).toEqual({
         status: 'down',
         latencyMs: 12,
-        error: 'Database connection failed',
+        error: 'Database connectivity check failed',
       });
     });
   });

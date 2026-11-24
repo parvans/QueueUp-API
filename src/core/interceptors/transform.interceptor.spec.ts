@@ -63,6 +63,24 @@ describe('TransformInterceptor', () => {
     expect(result).toHaveProperty('timestamp');
   });
 
+  it('should set success: false when non-2xx status code is passed (e.g. 503 degraded)', async () => {
+    const mockContext = createMockContext({ statusCode: 503 });
+    const mockHandler: CallHandler = {
+      handle: () => of({ status: 'degraded' }),
+    };
+
+    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(false);
+
+    const result$ = interceptor.intercept(mockContext, mockHandler);
+    const result = (await lastValueFrom(
+      result$,
+    )) as StandardApiResponse<unknown>;
+
+    expect(result.success).toBe(false);
+    expect(result.statusCode).toBe(503);
+    expect(result.data).toEqual({ status: 'degraded' });
+  });
+
   it('should handle null/undefined data cleanly', async () => {
     const mockContext = createMockContext({ statusCode: 204 });
     const mockHandler: CallHandler = {
