@@ -51,7 +51,7 @@ jobs:
       - name: Generate Prisma Client
         run: pnpm exec prisma generate
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/queueup_ci
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
       # 6. Run ESLint
       - name: Run ESLint
